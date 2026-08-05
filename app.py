@@ -9,8 +9,8 @@ import streamlit as st
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS
 import base64
-from langchain.embeddings import HuggingFaceHubEmbeddings
-from langchain_community.llms import HuggingFaceEndpoint
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import ChatOllama
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
 from langchain.chains import RetrievalQA
 import tempfile
@@ -27,8 +27,24 @@ from difflib import SequenceMatcher
 load_dotenv()
 CSV_FILE = "chat_history.csv"
 
-# Set path to Tesseract executable
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+# Secrets: Streamlit Cloud first, local .env as fallback
+_HAS_SECRETS_FILE = os.path.exists(".streamlit/secrets.toml") or os.path.exists(
+    os.path.expanduser("~/.streamlit/secrets.toml")
+)
+
+def _get_secret(key):
+    if _HAS_SECRETS_FILE:
+        return st.secrets.get(key) or os.getenv(key)
+    return os.getenv(key)
+
+PANDASAI_API_KEY = _get_secret("PANDASAI_API_KEY")
+if PANDASAI_API_KEY:
+    os.environ["PANDASAI_API_KEY"] = PANDASAI_API_KEY
+
+# Set path to Tesseract executable (local Windows dev only; Cloud uses packages.txt)
+_win_tesseract = r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+if os.path.exists(_win_tesseract):
+    pytesseract.pytesseract.tesseract_cmd = _win_tesseract
 
 def ocr_core(image_file):
     """Perform OCR on the given image file."""
@@ -210,7 +226,7 @@ def main():
             st.session_state.history.clear()
             save_chat_history(pd.DataFrame(columns=["ChatID", "Role", "Content"]))
             st.sidebar.error("*Chat history is currently empty.*")
-            st.experimental_rerun()
+            st.rerun()
 
     text = ""
     df = None
@@ -267,13 +283,12 @@ def main():
                 vectorstore = load_vectorstore(store_name)
             else:
                 try:
-                    embeddings = HuggingFaceHubEmbeddings(
-                        model="sentence-transformers/all-MiniLM-L6-v2",
-                        huggingfacehub_api_token=os.getenv("API_KEY")
+                    embeddings = HuggingFaceEmbeddings(
+                        model_name="sentence-transformers/all-MiniLM-L6-v2"
                     )
                     vectorstore = save_vectorstore(store_name, chunks, embeddings)
                 except Exception as e:
-                    st.error(f"Error getting embeddings from HuggingFace API: {e}")
+                    st.error(f"Error getting embeddings: {e}")
                     return
 
             # Initialize retriever
@@ -302,10 +317,9 @@ def main():
                             context = "\n".join([entry["content"] for entry in st.session_state.history[-10:]])
                             combined_input = context + "\nUser: " + query
 
-                            chain = RetrievalQA.from_chain_type(llm=HuggingFaceEndpoint(
-                                repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-                                temperature=0.1,
-                                huggingfacehub_api_token=os.getenv("API_KEY")
+                            chain = RetrievalQA.from_chain_type(llm=ChatOllama(
+                                model="llama3",
+                                temperature=0.1
                             ), chain_type="stuff", retriever=ensemble_retriever)
                             response = chain.invoke(input=combined_input)
 
